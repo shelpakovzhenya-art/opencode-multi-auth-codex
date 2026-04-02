@@ -39,6 +39,11 @@ function evaluateAccountHealth(acc: AccountCredentials, now: number): AccountHea
   const wasModelUnsupported: boolean = !!(acc.modelUnsupportedUntil && acc.modelUnsupportedUntil > now - HEALTH_HYSTERESIS_MS)
   const wasWorkspaceDeactivated: boolean = !!(acc.workspaceDeactivatedUntil && acc.workspaceDeactivatedUntil > now - HEALTH_HYSTERESIS_MS)
   
+  // Check if account has exhausted rate limits (remaining = 0)
+  const isRateLimitExhausted = 
+    (acc.rateLimits?.fiveHour?.remaining !== undefined && acc.rateLimits.fiveHour.remaining <= 0) ||
+    (acc.rateLimits?.weekly?.remaining !== undefined && acc.rateLimits.weekly.remaining <= 0)
+  
   // Phase D: Check if account is disabled
   const isDisabled: boolean = acc.enabled === false
   
@@ -47,7 +52,8 @@ function evaluateAccountHealth(acc: AccountCredentials, now: number): AccountHea
     !!(acc.modelUnsupportedUntil && acc.modelUnsupportedUntil > now) ||
     !!(acc.workspaceDeactivatedUntil && acc.workspaceDeactivatedUntil > now) ||
     !!acc.authInvalid ||
-    isDisabled // Phase D: Exclude disabled accounts
+    isDisabled ||
+    isRateLimitExhausted // Block if rate limits are exhausted
 
   const isInProbation: boolean = !currentlyBlocked && (wasRateLimited || wasModelUnsupported || wasWorkspaceDeactivated)
   
