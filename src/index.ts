@@ -622,6 +622,8 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
           while (attempt < maxAttempts) {
             attempt++
             
+            store = loadStore()
+            
             const settings = getRuntimeSettings()
             const effectiveConfig: PluginConfig = {
               ...pluginConfig,
