@@ -81,7 +81,7 @@ In your OpenCode config (`~/.config/opencode/opencode.json`):
 
 ```json
 {
-  "plugin": ["github:guard22/opencode-multi-auth-codex"]
+  "plugin": ["github:shelpakovzhenya-art/opencode-multi-auth-codex#v1.1.3"]
 }
 ```
 
@@ -101,7 +101,7 @@ Update existing installs:
 ### From source
 
 ```bash
-git clone https://github.com/guard22/opencode-multi-auth-codex.git
+git clone https://github.com/shelpakovzhenya-art/opencode-multi-auth-codex.git
 cd opencode-multi-auth-codex
 npm ci
 npm run build

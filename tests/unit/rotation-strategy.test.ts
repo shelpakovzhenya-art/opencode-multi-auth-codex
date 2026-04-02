@@ -21,6 +21,20 @@ function createAccount(alias: string, usageCount: number): AccountCredentials {
   }
 }
 
+function withRemainingLimit(account: AccountCredentials, remaining: number): AccountCredentials {
+  return {
+    ...account,
+    rateLimits: {
+      fiveHour: {
+        limit: 100,
+        remaining,
+        resetAt: Date.now() + 60 * 60 * 1000,
+        updatedAt: Date.now()
+      }
+    }
+  }
+}
+
 describe('Rotation Strategy Runtime Behavior', () => {
   beforeEach(() => {
     process.env = {
@@ -72,6 +86,44 @@ describe('Rotation Strategy Runtime Behavior', () => {
       {
         rotationStrategy: 'weighted-round-robin',
         accountWeights: { beta: 1 }
+      },
+      'test'
+    )
+    expect(update.success).toBe(true)
+
+    const rotation = await getNextAccount({
+      ...DEFAULT_CONFIG,
+      rotationStrategy: 'round-robin'
+    })
+
+    expect(rotation?.account.alias).toBe('beta')
+  })
+
+  it('skips accounts with exhausted tracked limits before they return 429', async () => {
+    const store = loadStore()
+    store.accounts.alpha = withRemainingLimit(createAccount('alpha', 0), 0)
+    store.accounts.beta = withRemainingLimit(createAccount('beta', 0), 80)
+    saveStore(store)
+
+    const rotation = await getNextAccount({
+      ...DEFAULT_CONFIG,
+      rotationStrategy: 'round-robin'
+    })
+
+    expect(rotation?.account.alias).toBe('beta')
+  })
+
+  it('skips accounts below the configured critical threshold', async () => {
+    const store = loadStore()
+    store.accounts.alpha = withRemainingLimit(createAccount('alpha', 0), 9)
+    store.accounts.beta = withRemainingLimit(createAccount('beta', 0), 45)
+    saveStore(store)
+
+    const update = updateSettings(
+      {
+        rotationStrategy: 'round-robin',
+        criticalThreshold: 10,
+        lowThreshold: 30
       },
       'test'
     )
