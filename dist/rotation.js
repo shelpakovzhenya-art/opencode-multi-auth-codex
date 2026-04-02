@@ -12,18 +12,62 @@ function shuffled(input) {
     }
     return a;
 }
-function evaluateAccountHealth(acc, now) {
+function getRemainingPercent(acc) {
+    const windows = [acc.rateLimits?.fiveHour, acc.rateLimits?.weekly];
+    const percentages = windows
+        .map((window) => {
+        if (!window || typeof window.remaining !== 'number')
+            return undefined;
+        if (typeof window.limit === 'number' && window.limit > 0) {
+            return (window.remaining / window.limit) * 100;
+        }
+        if (window.remaining >= 0 && window.remaining <= 100) {
+            return window.remaining;
+        }
+        return undefined;
+    })
+        .filter((value) => typeof value === 'number' && Number.isFinite(value));
+    if (percentages.length === 0)
+        return undefined;
+    return Math.min(...percentages);
+}
+function getExhaustedTrackedLimitResetAt(acc, now) {
+    const windows = [acc.rateLimits?.fiveHour, acc.rateLimits?.weekly];
+    const resets = windows
+        .filter((window) => (!!window &&
+        typeof window.remaining === 'number' &&
+        window.remaining <= 0 &&
+        typeof window.resetAt === 'number' &&
+        window.resetAt > now))
+        .map((window) => window.resetAt);
+    if (resets.length === 0)
+        return undefined;
+    return Math.max(...resets);
+}
+function evaluateAccountHealth(acc, now, criticalThreshold, lowThreshold) {
     const wasRateLimited = !!(acc.rateLimitedUntil && acc.rateLimitedUntil > now - HEALTH_HYSTERESIS_MS);
     const wasModelUnsupported = !!(acc.modelUnsupportedUntil && acc.modelUnsupportedUntil > now - HEALTH_HYSTERESIS_MS);
     const wasWorkspaceDeactivated = !!(acc.workspaceDeactivatedUntil && acc.workspaceDeactivatedUntil > now - HEALTH_HYSTERESIS_MS);
+    const inferredRateLimitedUntil = getExhaustedTrackedLimitResetAt(acc, now);
+    const isExhaustedFromTrackedLimits = !!(inferredRateLimitedUntil && inferredRateLimitedUntil > now);
+    const remainingPercent = getRemainingPercent(acc);
+    const isBelowCriticalThreshold = !isExhaustedFromTrackedLimits &&
+        typeof remainingPercent === 'number' &&
+        remainingPercent < criticalThreshold;
+    const isBelowLowThreshold = !isBelowCriticalThreshold &&
+        !isExhaustedFromTrackedLimits &&
+        typeof remainingPercent === 'number' &&
+        remainingPercent < lowThreshold;
     // Check if account has exhausted rate limits (remaining = 0)
     const isRateLimitExhausted = (acc.rateLimits?.fiveHour?.remaining !== undefined && acc.rateLimits.fiveHour.remaining <= 0) ||
         (acc.rateLimits?.weekly?.remaining !== undefined && acc.rateLimits.weekly.remaining <= 0);
     // Phase D: Check if account is disabled
     const isDisabled = acc.enabled === false;
     const currentlyBlocked = !!(acc.rateLimitedUntil && acc.rateLimitedUntil > now) ||
+        isExhaustedFromTrackedLimits ||
         !!(acc.modelUnsupportedUntil && acc.modelUnsupportedUntil > now) ||
         !!(acc.workspaceDeactivatedUntil && acc.workspaceDeactivatedUntil > now) ||
+        isBelowCriticalThreshold ||
         !!acc.authInvalid ||
         isDisabled ||
         isRateLimitExhausted; // Block if rate limits are exhausted
@@ -40,6 +84,8 @@ function evaluateAccountHealth(acc, now) {
         priority -= 30;
     if (recentFailures > 0)
         priority -= recentFailures * 10;
+    if (isBelowLowThreshold)
+        priority -= 20;
     if (acc.usageCount === 0)
         priority -= 5;
     if (currentlyBlocked)
@@ -76,12 +122,14 @@ export async function getNextAccount(config) {
         return null;
     }
     const now = Date.now();
+    const runtimeSettings = getRuntimeSettings();
+    const { criticalThreshold, lowThreshold, rotationStrategy } = runtimeSettings.settings;
     // Phase E: If force mode is active, never fall back to another alias.
     if (forceActive && forceState.forcedAlias) {
         const forcedAlias = forceState.forcedAlias;
         const forcedAccount = store.accounts[forcedAlias];
         if (forcedAccount) {
-            const health = evaluateAccountHealth(forcedAccount, now);
+            const health = evaluateAccountHealth(forcedAccount, now, criticalThreshold, lowThreshold);
             if (health.isHealthy) {
                 const token = await ensureValidToken(forcedAlias);
                 if (token) {
@@ -125,7 +173,7 @@ export async function getNextAccount(config) {
     const healthMap = new Map();
     for (const alias of aliases) {
         const acc = store.accounts[alias];
-        healthMap.set(alias, evaluateAccountHealth(acc, now));
+        healthMap.set(alias, evaluateAccountHealth(acc, now, criticalThreshold, lowThreshold));
     }
     const availableAliases = aliases.filter(alias => {
         const health = healthMap.get(alias);
@@ -142,8 +190,6 @@ export async function getNextAccount(config) {
             return parsed;
         return 60_000;
     })();
-    const runtimeSettings = getRuntimeSettings();
-    const rotationStrategy = runtimeSettings.settings.rotationStrategy || config.rotationStrategy;
     const buildCandidates = () => {
         switch (rotationStrategy) {
             case 'least-used': {
