@@ -522,7 +522,7 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                 }
                 const customFetch = async (input, init) => {
                     await syncAuthFromOpenCode(getAuth);
-                    const store = loadStore();
+                    let store = loadStore();
                     const forceState = getForceState();
                     const forcePinned = isForceActive() && !!forceState.forcedAlias;
                     const eligibleCount = Object.values(store.accounts).filter(acc => {
@@ -538,6 +538,7 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                     let attempt = 0;
                     while (attempt < maxAttempts) {
                         attempt++;
+                        store = loadStore();
                         const settings = getRuntimeSettings();
                         const effectiveConfig = {
                             ...pluginConfig,

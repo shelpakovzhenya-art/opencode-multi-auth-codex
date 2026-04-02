@@ -603,7 +603,7 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
         ): Promise<Response> => {
           await syncAuthFromOpenCode(getAuth)
           
-          const store = loadStore()
+          let store = loadStore()
           const forceState = getForceState()
           const forcePinned = isForceActive() && !!forceState.forcedAlias
           const eligibleCount = Object.values(store.accounts).filter(acc => {

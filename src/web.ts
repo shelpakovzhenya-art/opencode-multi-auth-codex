@@ -2574,7 +2574,7 @@ export function startWebConsole(options?: { port?: number; host?: string }): htt
 
     if (req.method === 'POST' && path === '/api/limits/refresh') {
       const body = await readJsonBody(req)
-      const accounts = listAccounts().filter((acc) => acc.idToken)
+      const accounts = listAccounts()
       if (body.alias && !accounts.find((acc) => acc.alias === body.alias)) {
         sendJson(res, 400, { error: 'Unknown alias' })
         return

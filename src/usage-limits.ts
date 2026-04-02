@@ -3,6 +3,8 @@ import type { AccountCredentials, AccountRateLimits, RateLimitWindow } from './t
 
 const DEFAULT_USAGE_BASE_URL = 'https://chatgpt.com/backend-api'
 const USAGE_BASE_URL_ENV = 'OPENCODE_MULTI_AUTH_USAGE_BASE_URL'
+const USAGE_TIMEOUT_MS_ENV = 'OPENCODE_MULTI_AUTH_USAGE_TIMEOUT_MS'
+const DEFAULT_USAGE_TIMEOUT_MS = 15_000
 
 interface UsageWindowSnapshot {
   used_percent?: number
@@ -47,6 +49,15 @@ function getUsageBaseUrl(): string {
   const override = process.env[USAGE_BASE_URL_ENV]?.trim()
   const baseUrl = override || DEFAULT_USAGE_BASE_URL
   return baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl
+}
+
+function getUsageTimeoutMs(): number {
+  const raw = process.env[USAGE_TIMEOUT_MS_ENV]
+  const parsed = raw ? Number(raw) : NaN
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return parsed
+  }
+  return DEFAULT_USAGE_TIMEOUT_MS
 }
 
 function mapWindow(window: UsageWindowSnapshot | null | undefined, now: number): RateLimitWindow | undefined {
@@ -106,13 +117,17 @@ export async function fetchUsageRateLimitsForAccount(
   }
 
   let res: Response
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), getUsageTimeoutMs())
   try {
-    res = await fetch(url, { method: 'GET', headers })
+    res = await fetch(url, { method: 'GET', headers, signal: controller.signal })
   } catch (err) {
     return {
       source: 'usage-api',
       error: `Usage API request failed: ${err}`
     }
+  } finally {
+    clearTimeout(timeout)
   }
 
   let rawText = ''

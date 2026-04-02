@@ -1,6 +1,6 @@
 import { refreshRateLimitsForAccount } from './limits-refresh.js';
 import { updateAccount } from './store.js';
-import { logInfo, logWarn } from './logger.js';
+import { logError, logInfo, logWarn } from './logger.js';
 let queueState = null;
 let stopRequested = false;
 export function getRefreshQueueState() {
@@ -25,7 +25,16 @@ async function runQueue(targets) {
             continue;
         }
         queueState.currentAlias = account.alias;
-        const result = await refreshRateLimitsForAccount(account);
+        let result;
+        try {
+            result = await refreshRateLimitsForAccount(account);
+        }
+        catch (err) {
+            const errorText = `Refresh queue failed for ${account.alias}: ${err}`;
+            logError(errorText);
+            updateAccount(account.alias, { limitStatus: 'error', limitError: errorText, lastLimitErrorAt: Date.now() });
+            result = { alias: account.alias, updated: false, error: errorText };
+        }
         queueState.results.push(result);
         queueState.completed += 1;
         if (result.error) {

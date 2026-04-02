@@ -7,66 +7,102 @@ import { fetchUsageRateLimitsForAccount } from './usage-limits.js';
 export async function refreshRateLimitsForAccount(account) {
     updateAccount(account.alias, { limitStatus: 'running', limitError: undefined });
     logInfo(`Refreshing limits for ${account.alias}`);
-    const usage = await fetchUsageRateLimitsForAccount(account);
-    if (usage.rateLimits) {
+    const latestAccount = loadStore().accounts[account.alias] || account;
+    try {
+        const usage = await fetchUsageRateLimitsForAccount(latestAccount);
+        if (usage.rateLimits) {
+            const now = Date.now();
+            const updates = {
+                rateLimits: mergeRateLimits(latestAccount.rateLimits, usage.rateLimits),
+                limitStatus: 'success',
+                limitError: undefined,
+                lastLimitProbeAt: now,
+                rateLimitedUntil: typeof usage.rateLimitedUntil === 'number' && usage.rateLimitedUntil > now
+                    ? usage.rateLimitedUntil
+                    : undefined,
+                limitsConfidence: calculateLimitsConfidence(now, latestAccount.lastLimitErrorAt, 'success')
+            };
+            if (usage.planType) {
+                updates.planType = usage.planType;
+            }
+            updateAccount(account.alias, updates);
+            logInfo(`Limits refreshed for ${account.alias} via usage API`);
+            return { alias: account.alias, updated: true };
+        }
+        if (usage.error) {
+            logInfo(`Usage API limits lookup failed for ${account.alias}, falling back to probe: ${usage.error}`);
+        }
+        if (!latestAccount.idToken) {
+            const now = Date.now();
+            const errorText = usage.error || 'Usage API failed and account has no idToken for probe fallback';
+            logError(`Limit refresh failed for ${account.alias}: ${errorText}`);
+            updateAccount(account.alias, {
+                limitStatus: 'error',
+                limitError: errorText,
+                lastLimitErrorAt: now,
+                limitsConfidence: calculateLimitsConfidence(latestAccount.lastLimitProbeAt, now, 'error')
+            });
+            return {
+                alias: account.alias,
+                updated: false,
+                error: errorText
+            };
+        }
+        const probe = await probeRateLimitsForAccount(latestAccount);
+        if (!probe.isAuthoritative || !probe.rateLimits) {
+            const now = Date.now();
+            const errorText = usage.error || probe.error || 'Probe failed';
+            logError(`Limit refresh failed for ${account.alias}: ${errorText}`);
+            const likelyRateLimit = isRateLimitErrorText(errorText);
+            const parsedResetAt = parseRateLimitResetFromError(errorText, now);
+            const fallbackResetAt = likelyRateLimit
+                ? getBlockingRateLimitResetAt(latestAccount.rateLimits, now)
+                : undefined;
+            const rateLimitedUntil = parsedResetAt ?? fallbackResetAt;
+            const updates = {
+                limitStatus: 'error',
+                limitError: errorText,
+                lastLimitErrorAt: now,
+                limitsConfidence: calculateLimitsConfidence(latestAccount.lastLimitProbeAt, now, 'error')
+            };
+            if (typeof rateLimitedUntil === 'number' && rateLimitedUntil > now) {
+                updates.rateLimitedUntil = rateLimitedUntil;
+            }
+            updateAccount(account.alias, updates);
+            return {
+                alias: account.alias,
+                updated: false,
+                error: errorText
+            };
+        }
         const now = Date.now();
-        const updates = {
-            rateLimits: mergeRateLimits(account.rateLimits, usage.rateLimits),
+        updateAccount(account.alias, {
+            rateLimits: mergeRateLimits(latestAccount.rateLimits, probe.rateLimits),
             limitStatus: 'success',
             limitError: undefined,
+            rateLimitedUntil: undefined,
             lastLimitProbeAt: now,
-            limitsConfidence: calculateLimitsConfidence(now, account.lastLimitErrorAt, 'success')
-        };
-        if (usage.planType) {
-            updates.planType = usage.planType;
-        }
-        if (typeof usage.rateLimitedUntil === 'number' && usage.rateLimitedUntil > now) {
-            updates.rateLimitedUntil = usage.rateLimitedUntil;
-        }
-        updateAccount(account.alias, updates);
-        logInfo(`Limits refreshed for ${account.alias} via usage API`);
+            limitsConfidence: calculateLimitsConfidence(now, latestAccount.lastLimitErrorAt, 'success')
+        });
+        logInfo(`Limits refreshed for ${account.alias} using model ${probe.probeModel || 'unknown'}, effort ${probe.probeEffort || 'default'}`);
         return { alias: account.alias, updated: true };
     }
-    if (usage.error) {
-        logInfo(`Usage API limits lookup failed for ${account.alias}, falling back to probe: ${usage.error}`);
-    }
-    const probe = await probeRateLimitsForAccount(account);
-    if (!probe.isAuthoritative || !probe.rateLimits) {
+    catch (err) {
         const now = Date.now();
-        const errorText = usage.error || probe.error || 'Probe failed';
-        logError(`Limit refresh failed for ${account.alias}: ${errorText}`);
-        const likelyRateLimit = isRateLimitErrorText(errorText);
-        const parsedResetAt = parseRateLimitResetFromError(errorText, now);
-        const fallbackResetAt = likelyRateLimit
-            ? getBlockingRateLimitResetAt(account.rateLimits, now)
-            : undefined;
-        const rateLimitedUntil = parsedResetAt ?? fallbackResetAt;
-        const updates = {
+        const errorText = `Unexpected limit refresh error: ${err}`;
+        logError(`Limit refresh crashed for ${account.alias}: ${err}`);
+        updateAccount(account.alias, {
             limitStatus: 'error',
             limitError: errorText,
             lastLimitErrorAt: now,
-            limitsConfidence: calculateLimitsConfidence(account.lastLimitProbeAt, now, 'error')
-        };
-        if (typeof rateLimitedUntil === 'number' && rateLimitedUntil > now) {
-            updates.rateLimitedUntil = rateLimitedUntil;
-        }
-        updateAccount(account.alias, updates);
+            limitsConfidence: calculateLimitsConfidence(latestAccount.lastLimitProbeAt, now, 'error')
+        });
         return {
             alias: account.alias,
             updated: false,
             error: errorText
         };
     }
-    const now = Date.now();
-    updateAccount(account.alias, {
-        rateLimits: mergeRateLimits(account.rateLimits, probe.rateLimits),
-        limitStatus: 'success',
-        limitError: undefined,
-        lastLimitProbeAt: now,
-        limitsConfidence: calculateLimitsConfidence(now, account.lastLimitErrorAt, 'success')
-    });
-    logInfo(`Limits refreshed for ${account.alias} using model ${probe.probeModel || 'unknown'}, effort ${probe.probeEffort || 'default'}`);
-    return { alias: account.alias, updated: true };
 }
 export async function refreshRateLimits(accounts, alias) {
     if (alias) {
