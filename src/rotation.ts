@@ -138,11 +138,13 @@ export async function getNextAccount(
             }
           }
         } else {
-          console.warn(`[multi-auth] Force mode: ${forcedAlias} token unavailable; refusing fallback`)
+          console.warn(`[multi-auth] Force mode: ${forcedAlias} token unavailable; refusing fallback, clearing force`)
+          clearForce()
           return null
         }
       } else {
         console.warn(`[multi-auth] Force mode: ${forcedAlias} currently blocked; refusing fallback`)
+        clearForce()
         return null
       }
     } else {
