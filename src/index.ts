@@ -9,6 +9,7 @@ import {
   parseRateLimitResetFromError,
   parseRetryAfterHeader
 } from './rate-limits.js'
+import { syncCodexAuthToAvailableAlias } from './codex-auth.js'
 import {
   getNextAccount,
   markAuthInvalid,
@@ -590,6 +591,11 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
        */
       async loader(getAuth, provider) {
         await syncAuthFromOpenCode(getAuth)
+        try {
+          syncCodexAuthToAvailableAlias()
+        } catch {
+          // Best effort only: request routing still works without auth.json repair.
+        }
         const accounts = listAccounts()
 
         if (accounts.length === 0) {
@@ -602,16 +608,15 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
           init?: RequestInit
         ): Promise<Response> => {
           await syncAuthFromOpenCode(getAuth)
-          
-          let store = loadStore()
+
+          const currentStore = loadStore()
           const forceState = getForceState()
           const forcePinned = isForceActive() && !!forceState.forcedAlias
-          const eligibleCount = Object.values(store.accounts).filter(acc => {
+          const eligibleCount = Object.values(currentStore.accounts).filter(acc => {
             const now = Date.now()
             return (!acc.rateLimitedUntil || acc.rateLimitedUntil < now) &&
                    (!acc.modelUnsupportedUntil || acc.modelUnsupportedUntil < now) &&
                    (!acc.workspaceDeactivatedUntil || acc.workspaceDeactivatedUntil < now) &&
-                   !acc.authInvalid &&
                    acc.enabled !== false
           }).length
           
@@ -621,8 +626,14 @@ const MultiAuthPlugin: Plugin = async ({ client, $, serverUrl, project, director
 
           while (attempt < maxAttempts) {
             attempt++
+
+            try {
+              syncCodexAuthToAvailableAlias()
+            } catch {
+              // Best effort only: keep request retry flow alive.
+            }
             
-            store = loadStore()
+            const store = loadStore()
             
             const settings = getRuntimeSettings()
             const effectiveConfig: PluginConfig = {

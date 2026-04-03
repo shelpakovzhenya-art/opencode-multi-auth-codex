@@ -58,9 +58,13 @@ function evaluateAccountHealth(acc, now, criticalThreshold, lowThreshold) {
         !isExhaustedFromTrackedLimits &&
         typeof remainingPercent === 'number' &&
         remainingPercent < lowThreshold;
-    // Check if account has exhausted rate limits (remaining = 0)
-    const isRateLimitExhausted = (acc.rateLimits?.fiveHour?.remaining !== undefined && acc.rateLimits.fiveHour.remaining <= 0) ||
-        (acc.rateLimits?.weekly?.remaining !== undefined && acc.rateLimits.weekly.remaining <= 0);
+    const isFiveHourExhausted = acc.rateLimits?.fiveHour?.remaining !== undefined &&
+        acc.rateLimits.fiveHour.remaining <= 0 &&
+        (acc.rateLimits.fiveHour.resetAt === undefined || acc.rateLimits.fiveHour.resetAt > now);
+    const isWeeklyExhausted = acc.rateLimits?.weekly?.remaining !== undefined &&
+        acc.rateLimits.weekly.remaining <= 0 &&
+        (acc.rateLimits.weekly.resetAt === undefined || acc.rateLimits.weekly.resetAt > now);
+    const isRateLimitExhausted = isFiveHourExhausted || isWeeklyExhausted;
     // Phase D: Check if account is disabled
     const isDisabled = acc.enabled === false;
     const currentlyBlocked = !!(acc.rateLimitedUntil && acc.rateLimitedUntil > now) ||

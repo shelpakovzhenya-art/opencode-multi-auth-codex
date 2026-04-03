@@ -83,6 +83,62 @@ export function getExpiryFromClaims(claims) {
 function fingerprintTokens(tokens) {
     return `${tokens.access_token}:${tokens.refresh_token}:${tokens.id_token}`;
 }
+function hasWritableCodexTokens(account) {
+    return Boolean(account?.accessToken && account.refreshToken && account.idToken);
+}
+function remainingPercent(window) {
+    if (!window || typeof window.remaining !== 'number')
+        return -1;
+    if (typeof window.limit === 'number' && window.limit > 0) {
+        return Math.round((window.remaining / window.limit) * 100);
+    }
+    if (window.remaining >= 0 && window.remaining <= 100) {
+        return window.remaining;
+    }
+    return -1;
+}
+function isWindowExhausted(window, now) {
+    if (!window || typeof window.remaining !== 'number' || window.remaining > 0) {
+        return false;
+    }
+    return window.resetAt === undefined || window.resetAt > now;
+}
+function isAccountAvailableForCodexAuth(account, now) {
+    if (!hasWritableCodexTokens(account))
+        return false;
+    if (account.enabled === false || account.authInvalid)
+        return false;
+    if (account.rateLimitedUntil && account.rateLimitedUntil > now)
+        return false;
+    if (account.modelUnsupportedUntil && account.modelUnsupportedUntil > now)
+        return false;
+    if (account.workspaceDeactivatedUntil && account.workspaceDeactivatedUntil > now)
+        return false;
+    if (isWindowExhausted(account.rateLimits?.fiveHour, now))
+        return false;
+    if (isWindowExhausted(account.rateLimits?.weekly, now))
+        return false;
+    return true;
+}
+function compareAvailableAccounts(a, b) {
+    const aWeeklyPercent = remainingPercent(a.rateLimits?.weekly);
+    const bWeeklyPercent = remainingPercent(b.rateLimits?.weekly);
+    if (aWeeklyPercent !== bWeeklyPercent)
+        return bWeeklyPercent - aWeeklyPercent;
+    const aWeeklyRemaining = typeof a.rateLimits?.weekly?.remaining === 'number' ? a.rateLimits.weekly.remaining : -1;
+    const bWeeklyRemaining = typeof b.rateLimits?.weekly?.remaining === 'number' ? b.rateLimits.weekly.remaining : -1;
+    if (aWeeklyRemaining !== bWeeklyRemaining)
+        return bWeeklyRemaining - aWeeklyRemaining;
+    const aFiveHourPercent = remainingPercent(a.rateLimits?.fiveHour);
+    const bFiveHourPercent = remainingPercent(b.rateLimits?.fiveHour);
+    if (aFiveHourPercent !== bFiveHourPercent)
+        return bFiveHourPercent - aFiveHourPercent;
+    const aLastUsed = typeof a.lastUsed === 'number' ? a.lastUsed : 0;
+    const bLastUsed = typeof b.lastUsed === 'number' ? b.lastUsed : 0;
+    if (aLastUsed !== bLastUsed)
+        return aLastUsed - bLastUsed;
+    return a.alias.localeCompare(b.alias);
+}
 function buildAlias(email, accountId, store) {
     const base = email?.split('@')[0] || accountId?.slice(0, 8) || `account-${Date.now()}`;
     const existing = new Set(Object.keys(store.accounts));
@@ -108,6 +164,33 @@ function findMatchingAlias(tokens, accountId, email, store) {
             return account.alias;
     }
     return null;
+}
+function getAliasFromCodexAuthFile(store) {
+    const auth = loadCodexAuthFile();
+    if (!auth?.tokens?.access_token || !auth.tokens.refresh_token || !auth.tokens.id_token) {
+        return null;
+    }
+    const accessClaims = decodeJwtPayload(auth.tokens.access_token);
+    const idClaims = decodeJwtPayload(auth.tokens.id_token);
+    const email = getEmailFromClaims(idClaims) || getEmailFromClaims(accessClaims);
+    const accountId = auth.tokens.account_id ||
+        getAccountIdFromClaims(idClaims) ||
+        getAccountIdFromClaims(accessClaims);
+    return findMatchingAlias(auth.tokens, accountId, email, store);
+}
+export function getPreferredCodexAuthAlias(preferredAlias) {
+    const store = loadStore();
+    const now = Date.now();
+    if (preferredAlias) {
+        const preferred = store.accounts[preferredAlias];
+        if (isAccountAvailableForCodexAuth(preferred, now)) {
+            return preferredAlias;
+        }
+    }
+    const candidates = Object.values(store.accounts)
+        .filter((account) => isAccountAvailableForCodexAuth(account, now))
+        .sort(compareAvailableAccounts);
+    return candidates[0]?.alias || null;
 }
 export function syncCodexAuthFile() {
     const auth = loadCodexAuthFile();
@@ -151,7 +234,7 @@ export function syncCodexAuthFile() {
 export function getCodexAuthStatus() {
     return { error: lastAuthError };
 }
-export function writeCodexAuthForAlias(alias) {
+export function writeCodexAuthForAlias(alias, options = {}) {
     const store = loadStore();
     const account = store.accounts[alias];
     if (!account) {
@@ -172,11 +255,30 @@ export function writeCodexAuthForAlias(alias) {
         last_refresh: new Date().toISOString()
     };
     writeCodexAuthFile(auth);
-    setActiveAlias(alias);
+    if (options.setActive !== false) {
+        setActiveAlias(alias);
+    }
     updateAccount(alias, {
         lastRefresh: auth.last_refresh,
         lastSeenAt: Date.now(),
         source: 'codex'
     });
+}
+export function syncCodexAuthToAvailableAlias(preferredAlias) {
+    const store = loadStore();
+    const now = Date.now();
+    const currentAlias = getAliasFromCodexAuthFile(store);
+    if (currentAlias && isAccountAvailableForCodexAuth(store.accounts[currentAlias], now)) {
+        return { alias: currentAlias, updated: false };
+    }
+    const targetAlias = getPreferredCodexAuthAlias(preferredAlias);
+    if (!targetAlias) {
+        return { alias: currentAlias, updated: false };
+    }
+    if (currentAlias === targetAlias) {
+        return { alias: targetAlias, updated: false };
+    }
+    writeCodexAuthForAlias(targetAlias, { setActive: false });
+    return { alias: targetAlias, updated: true };
 }
 //# sourceMappingURL=codex-auth.js.map

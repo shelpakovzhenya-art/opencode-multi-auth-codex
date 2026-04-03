@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import { syncAuthFromOpenCode } from './auth-sync.js';
 import { createAuthorizationFlow, loginAccount } from './auth.js';
 import { extractRateLimitUpdate, getBlockingRateLimitResetAt, mergeRateLimits, parseRateLimitResetFromError, parseRetryAfterHeader } from './rate-limits.js';
+import { syncCodexAuthToAvailableAlias } from './codex-auth.js';
 import { getNextAccount, markAuthInvalid, markModelUnsupported, markRateLimited, markWorkspaceDeactivated } from './rotation.js';
 import { getDefaultModels } from './models.js';
 import { getForceState, isForceActive } from './force-mode.js';
@@ -515,6 +516,12 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
              */
             async loader(getAuth, provider) {
                 await syncAuthFromOpenCode(getAuth);
+                try {
+                    syncCodexAuthToAvailableAlias();
+                }
+                catch {
+                    // Best effort only: request routing still works without auth.json repair.
+                }
                 const accounts = listAccounts();
                 if (accounts.length === 0) {
                     console.log('[multi-auth] No accounts configured. Run: opencode-multi-auth add <alias>');
@@ -522,15 +529,14 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                 }
                 const customFetch = async (input, init) => {
                     await syncAuthFromOpenCode(getAuth);
-                    let store = loadStore();
+                    const currentStore = loadStore();
                     const forceState = getForceState();
                     const forcePinned = isForceActive() && !!forceState.forcedAlias;
-                    const eligibleCount = Object.values(store.accounts).filter(acc => {
+                    const eligibleCount = Object.values(currentStore.accounts).filter(acc => {
                         const now = Date.now();
                         return (!acc.rateLimitedUntil || acc.rateLimitedUntil < now) &&
                             (!acc.modelUnsupportedUntil || acc.modelUnsupportedUntil < now) &&
                             (!acc.workspaceDeactivatedUntil || acc.workspaceDeactivatedUntil < now) &&
-                            !acc.authInvalid &&
                             acc.enabled !== false;
                     }).length;
                     const maxAttempts = forcePinned ? 1 : Math.max(1, eligibleCount);
@@ -538,7 +544,13 @@ const MultiAuthPlugin = async ({ client, $, serverUrl, project, directory }) => 
                     let attempt = 0;
                     while (attempt < maxAttempts) {
                         attempt++;
-                        store = loadStore();
+                        try {
+                            syncCodexAuthToAvailableAlias();
+                        }
+                        catch {
+                            // Best effort only: keep request retry flow alive.
+                        }
+                        const store = loadStore();
                         const settings = getRuntimeSettings();
                         const effectiveConfig = {
                             ...pluginConfig,
