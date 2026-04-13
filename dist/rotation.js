@@ -6,6 +6,7 @@ import { probeRateLimitsForAccount } from './probe-limits.js';
 import { hasMeaningfulRateLimits } from './rate-limits.js';
 const FORCE_PROBE_BEFORE_ROTATION = true;
 const PROBE_STALENESS_MS = 30_000;
+const DEBUG_SELECTION = true;
 async function refreshAccountLimits(alias) {
     let store = loadStore();
     const account = store.accounts[alias];
@@ -224,12 +225,20 @@ export async function getNextAccount(config) {
     const healthMap = new Map();
     for (const alias of aliases) {
         const acc = store.accounts[alias];
+        const fiveHour = acc.rateLimits?.fiveHour?.remaining;
+        const weekly = acc.rateLimits?.weekly?.remaining;
+        if (DEBUG_SELECTION) {
+            console.log(`[multi-auth] ${alias}: 5h=${fiveHour ?? '?'}, weekly=${weekly ?? '?'}`);
+        }
         healthMap.set(alias, evaluateAccountHealth(acc, now, criticalThreshold, lowThreshold));
     }
     const availableAliases = aliases.filter(alias => {
         const health = healthMap.get(alias);
         return health?.isHealthy === true;
     });
+    if (DEBUG_SELECTION) {
+        console.log(`[multi-auth] Available: ${availableAliases.length} of ${aliases.length}`);
+    }
     if (availableAliases.length === 0) {
         console.warn('[multi-auth] No available accounts (rate-limited or invalidated).');
         return null;
