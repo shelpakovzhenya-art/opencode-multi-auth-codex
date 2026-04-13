@@ -202,6 +202,10 @@ function getAliasFromCodexAuthFile(store: ReturnType<typeof loadStore>): string 
   return findMatchingAlias(auth.tokens, accountId, email, store)
 }
 
+export function getCodexAuthAlias(store: ReturnType<typeof loadStore> = loadStore()): string | null {
+  return getAliasFromCodexAuthFile(store)
+}
+
 export function getPreferredCodexAuthAlias(preferredAlias?: string): string | null {
   const store = loadStore()
   const now = Date.now()

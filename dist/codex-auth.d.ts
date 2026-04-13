@@ -1,3 +1,4 @@
+import { loadStore } from './store.js';
 export interface CodexAuthTokens {
     id_token: string;
     access_token: string;
@@ -19,6 +20,7 @@ export declare function decodeJwtPayload(token: string): Record<string, any> | n
 export declare function getEmailFromClaims(claims: Record<string, any> | null): string | undefined;
 export declare function getAccountIdFromClaims(claims: Record<string, any> | null): string | undefined;
 export declare function getExpiryFromClaims(claims: Record<string, any> | null): number | undefined;
+export declare function getCodexAuthAlias(store?: ReturnType<typeof loadStore>): string | null;
 export declare function getPreferredCodexAuthAlias(preferredAlias?: string): string | null;
 export declare function syncCodexAuthFile(): {
     alias: string | null;

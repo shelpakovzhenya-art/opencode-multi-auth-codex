@@ -2,7 +2,40 @@ import { getStoreDiagnostics, loadStore, saveStore, updateAccount } from './stor
 import { ensureValidToken } from './auth.js'
 import { isForceActive, checkAndAutoClearForce, getForceState, clearForce } from './force-mode.js'
 import { getRuntimeSettings, calculateWeightedSelection } from './settings.js'
+import { probeRateLimitsForAccount, getProbeHomeRoot } from './probe-limits.js'
+import { hasMeaningfulRateLimits } from './rate-limits.js'
 import type { AccountCredentials, DEFAULT_CONFIG } from './types.js'
+
+const FORCE_PROBE_BEFORE_ROTATION = true
+const PROBE_STALENESS_MS = 30_000
+
+async function refreshAccountLimits(alias: string): Promise<AccountCredentials | null> {
+  let store = loadStore()
+  const account = store.accounts[alias]
+  if (!account) return null
+  
+  const needsProbe = !hasMeaningfulRateLimits(account.rateLimits) ||
+    (account.lastLimitProbeAt && Date.now() - account.lastLimitProbeAt > PROBE_STALENESS_MS)
+  
+  if (!needsProbe) return account
+  
+  console.log(`[multi-auth] Probing limits for ${alias} before rotation...`)
+  try {
+    const probeResult = await probeRateLimitsForAccount(account)
+    if (probeResult.rateLimits) {
+      store = updateAccount(alias, {
+        rateLimits: probeResult.rateLimits,
+        lastLimitProbeAt: Date.now(),
+        limitsConfidence: probeResult.isAuthoritative ? 'fresh' : 'stale'
+      })
+      return store.accounts[alias] || null
+    }
+  } catch (err) {
+    console.error(`[multi-auth] Probe failed for ${alias}:`, err)
+  }
+  
+  return account
+}
 
 export interface RotationResult {
   account: AccountCredentials
@@ -175,6 +208,23 @@ export async function getNextAccount(
   const now = Date.now()
   const runtimeSettings = getRuntimeSettings()
   const { criticalThreshold, lowThreshold, rotationStrategy } = runtimeSettings.settings
+  
+  if (FORCE_PROBE_BEFORE_ROTATION) {
+    console.log('[multi-auth] Probing accounts before rotation...')
+    for (const alias of aliases) {
+      try {
+        const updated = await refreshAccountLimits(alias)
+        if (updated) {
+          store = loadStore()
+          store.accounts[alias] = updated
+          saveStore(store)
+        }
+      } catch (err) {
+        console.warn(`[multi-auth] Probe error for ${alias}:`, err)
+      }
+    }
+    store = loadStore()
+  }
   
   // Phase E: If force mode is active, never fall back to another alias.
   if (forceActive && forceState.forcedAlias) {

@@ -6,8 +6,9 @@ import * as path from 'node:path';
 import { URL } from 'node:url';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
+import { getOpenCodeAuthAlias } from './auth-sync.js';
 import { createAuthorizationFlow, loginAccount, refreshToken } from './auth.js';
-import { getCodexAuthPath, getCodexAuthStatus, syncCodexAuthFile, writeCodexAuthForAlias } from './codex-auth.js';
+import { getCodexAuthAlias, getCodexAuthPath, getCodexAuthStatus, syncCodexAuthFile, writeCodexAuthForAlias } from './codex-auth.js';
 import { getStoreStatus, listAccounts, loadStore, removeAccount, updateAccount } from './store.js';
 import { getRefreshQueueState, startRefreshQueue, stopRefreshQueue } from './refresh-queue.js';
 import { getLogPath, logError, logInfo, readLogTail } from './logger.js';
@@ -281,6 +282,10 @@ const HTML = `<!doctype html>
       .badge.recommended {
         background: rgba(110, 231, 255, 0.15);
         color: var(--accent-2);
+      }
+      .badge.current {
+        background: rgba(255, 181, 71, 0.2);
+        color: var(--accent);
       }
       .status-badge {
         font-size: 11px;
@@ -1090,10 +1095,13 @@ const HTML = `<!doctype html>
       function renderAccounts(state) {
         const filtered = sortAccounts(applyFilters(state.accounts), state)
         const cards = filtered.map((acc) => {
-          const active = acc.alias === state.currentAlias
+          const currentAlias = state.openCodeAlias || state.currentAlias
+          const activeAlias = state.activeAlias || null
+          const onDeviceAlias = state.onDeviceAlias || null
+          const current = acc.alias === currentAlias
+          const active = acc.alias === activeAlias
+          const onDevice = acc.alias === onDeviceAlias
           const recommended = acc.alias === state.recommendedAlias
-          const badge = active ? 'On device' : 'Stored'
-          const badgeClass = active ? 'badge' : 'badge inactive'
           const status = acc.limitStatus || 'idle'
           const statusLabels = {
             idle: 'idle',
@@ -1105,6 +1113,14 @@ const HTML = `<!doctype html>
           }
           const statusClass = \`status-badge status-\${status}\`
           const statusLabel = statusLabels[status] || status
+          const badges = [
+            current ? '<span class="badge current">OpenCode session</span>' : '',
+            active ? '<span class="badge">Active route</span>' : '',
+            onDevice ? '<span class="badge recommended">On device</span>' : '',
+            !current && !active && !onDevice ? '<span class="badge inactive">Stored</span>' : '',
+            recommended ? '<span class="badge recommended">Recommended</span>' : '',
+            \`<span class="\${statusClass}">\${statusLabel}</span>\`
+          ].filter(Boolean).join('')
           const tags = (acc.tags || []).map((tag) => \`<span class="tag-chip">\${escapeHtml(tag)}</span>\`).join('')
           const notes = acc.notes ? escapeHtml(acc.notes) : 'No notes yet.'
           const limitBlocks = [
@@ -1114,17 +1130,15 @@ const HTML = `<!doctype html>
 
           return \`
             <div class="account-card">
-              <div class="account-title">
-                <div class="account-heading">
-                  <div class="account-name">\${escapeHtml(acc.alias)}</div>
-                  <div class="account-subtitle">\${escapeHtml(acc.email || acc.accountId || 'unknown account')}</div>
+                <div class="account-title">
+                  <div class="account-heading">
+                    <div class="account-name">\${escapeHtml(acc.alias)}</div>
+                    <div class="account-subtitle">\${escapeHtml(acc.email || acc.accountId || 'unknown account')}</div>
+                  </div>
+                  <div class="account-badges">
+                    \${badges}
+                  </div>
                 </div>
-                <div class="account-badges">
-                  <span class="\${badgeClass}">\${badge}</span>
-                  \${recommended ? '<span class="badge recommended">Recommended</span>' : ''}
-                  <span class="\${statusClass}">\${statusLabel}</span>
-                </div>
-              </div>
               <div class="account-meta">
                 <div>Token expires: \${formatDate(acc.expiresAt)}</div>
                 <div>Last seen: \${acc.lastSeenAt ? formatDate(acc.lastSeenAt) : acc.lastUsed ? formatDate(acc.lastUsed) : 'never'}</div>
@@ -1169,6 +1183,9 @@ const HTML = `<!doctype html>
       }
 
       function renderMeta(state) {
+        const currentAlias = state.openCodeAlias || state.currentAlias
+        const activeAlias = state.activeAlias || null
+        const onDeviceAlias = state.onDeviceAlias || null
         const storeStatus = state.storeStatus
         const storeLine = storeStatus.encrypted
           ? storeStatus.locked ? 'Encrypted (locked)' : 'Encrypted'
@@ -1179,11 +1196,19 @@ const HTML = `<!doctype html>
             <strong>\${state.accounts.length}</strong>
           </div>
           <div class="meta-item">
-            <span>Current token</span>
-            <strong>\${state.currentAlias || 'none'}</strong>
+            <span>OpenCode session</span>
+            <strong>\${currentAlias || 'none'}</strong>
           </div>
           <div class="meta-item">
-            <span>Recommended token</span>
+            <span>Active route</span>
+            <strong>\${activeAlias || 'none'}</strong>
+          </div>
+          <div class="meta-item">
+            <span>On-device token</span>
+            <strong>\${onDeviceAlias || 'none'}</strong>
+          </div>
+          <div class="meta-item">
+            <span>Best available</span>
             <strong>\${state.recommendedAlias || 'n/a'}</strong>
           </div>
           <div class="meta-item">
@@ -2289,6 +2314,9 @@ export function startWebConsole(options) {
             if (req.method === 'GET' && path === '/api/state') {
                 runSync();
                 const store = loadStore();
+                const openCodeAlias = getOpenCodeAuthAlias(store);
+                const onDeviceAlias = getCodexAuthAlias(store);
+                const activeAlias = store.activeAlias || onDeviceAlias;
                 const rawAccounts = Object.values(store.accounts);
                 const accounts = rawAccounts.map(scrubAccount);
                 const storeStatus = getStoreStatus();
@@ -2301,7 +2329,10 @@ export function startWebConsole(options) {
                 const forceActive = isForceActive();
                 sendJson(res, 200, {
                     authPath: getCodexAuthPath(),
-                    currentAlias: store.activeAlias,
+                    currentAlias: openCodeAlias || activeAlias,
+                    openCodeAlias,
+                    activeAlias,
+                    onDeviceAlias,
                     accounts,
                     lastSyncAt,
                     lastSyncError,

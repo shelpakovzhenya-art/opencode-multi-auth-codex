@@ -178,6 +178,9 @@ function getAliasFromCodexAuthFile(store) {
         getAccountIdFromClaims(accessClaims);
     return findMatchingAlias(auth.tokens, accountId, email, store);
 }
+export function getCodexAuthAlias(store = loadStore()) {
+    return getAliasFromCodexAuthFile(store);
+}
 export function getPreferredCodexAuthAlias(preferredAlias) {
     const store = loadStore();
     const now = Date.now();
